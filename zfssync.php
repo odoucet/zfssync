@@ -1,5 +1,5 @@
 <?php
-date_default_timezone_set('Europe/Paris');
+date_default_timezone_set('UTC');
 
 $errors = "";
 
@@ -27,22 +27,24 @@ try {
         date('Y-m-d H:i:s')
     );
     // distant list of volumes
-    $distantVolumes = explode("\n", trim($distantSsh->exec('zfs list -H -o name -rt filesystem,volume '.$parameters['zfs_distant_path'])));
+    $distantVolumes = explode("\n", trim($distantSsh->exec('/sbin/zfs list -H -o name -rt filesystem,volume '.$parameters['zfs_distant_path'])));
 
     printf(
         "%s Retrieving local volumes ...\n",
         date('Y-m-d H:i:s')
     );
     // Local list of volumes
-    $localVolumes = explode("\n", trim(shell_exec('zfs list -H -o name -rt filesystem,volume '.$parameters['zfs_local_path'])));
-
+    $localVolumes = explode("\n", trim(shell_exec('/sbin/zfs list -H -o name -rt filesystem,volume '.$parameters['zfs_local_path'])));
     $volumesToCreate = array();
 
     $yesterday = date('Y-m-d', time()-86400).'.000000Z';
     $today     = date('Y-m-d').'.000000Z';
-
+    
     // Diff !
     foreach ($localVolumes as $i => $line) {
+        if (trim($line) == '') {
+            continue;
+        }
         $newName = str_replace($parameters['zfs_local_path'], $parameters['zfs_distant_path'], $line);
         if (!in_array($newName, $distantVolumes)) {
             $found = false;
@@ -68,22 +70,23 @@ try {
 
     if (count($volumesToCreate) > 0) {
         sort($volumesToCreate);
+        $i = 0;
         foreach ($volumesToCreate as $vol) {
             $start = microtime(true);
             $distantName = str_replace($parameters['zfs_local_path'], $parameters['zfs_distant_path'], $vol);
 
             printf(
-                "%s [%4.1f%%] Syncing  %-40s ...\n",
+                "%s [%4.1f%%] Syncing  %-60s ...\n",
                 date('Y-m-d H:i:s'),
                 $i/count($localVolumes)*100,
                 $vol
             );
 
-            echo $distantInteractiveSsh->shell("/usr/bin/mbuffer -q -s 128k -W 600 -m 100M -4 -I 31330|zfs recv -F '".$distantName."' 2>&1 & ".PHP_EOL);
+            echo $distantInteractiveSsh->shell("/usr/bin/mbuffer -q -s 128k -W 600 -m 100M -4 -I 31330|/sbin/zfs recv -F '".$distantName."' 2>&1 & ".PHP_EOL);
             // need to wait a little for process to spawn
             sleep(1);
 
-            $str =  "zfs send  '".$vol."@".$today."' | ".
+            $str =  "/sbin/zfs send  '".$vol."@".$today."' | ".
                     "/usr/bin/mbuffer -q -s 128k -W 600 -m 100M -O '".$parameters['ssh_host'].":31330' 2>&1";
 
             $returnString = shell_exec($str);
@@ -91,16 +94,16 @@ try {
             wait_for_distant_mbuffer($distantSsh);
             if ($returnString == '') {
                     printf(
-                        "%s [%4.1f%%] Synced  %-40s OK in %7.2f seconds\n",
+                        "%s [%4.1f%%] Synced  %-60s OK in %7.2f seconds\n",
                         date('Y-m-d H:i:s'),
-                        $i/count($localVolumes)*100,
+                        $i/count($volumesToCreate)*100,
                         $vol,
                         microtime(true)-$start
                     );
 
             } else {
                 printf(
-                    "%s [%4.1f%%] Synced  %-40s FAILED: %s\n",
+                    "%s [%4.1f%%] Synced  %-60s FAILED: %s\n",
                     date('Y-m-d H:i:s'),
                     $i/count($localVolumes)*100,
                     $vol,
@@ -108,6 +111,7 @@ try {
                 );
                 kill_local_mbuffer();
             }
+            $i++;
         }
     }
 
@@ -126,11 +130,11 @@ try {
         $hasSnap = trim($distantSsh->exec('zfs list -H -o name '.$distantName.'@'.$today));
         if ($hasSnap == $distantName.'@'.$today) {
             //Yes, already have this one !
-            printf("%s [%4.1f%%] %-40s already synced !\n", date('Y-m-d H:i:s'), $i/count($localVolumes)*100, $vol);
+            printf("%s [%4.1f%%] %-60s already synced !\n", date('Y-m-d H:i:s'), $i/count($localVolumes)*100, $vol);
 
         } else {
             // find if distant src exists
-            $hasOrigin = trim($distantSsh->exec('zfs list -H -o name '.$distantName.'@'.$yesterday));
+            $hasOrigin = trim($distantSsh->exec('/sbin/zfs list -H -o name '.$distantName.'@'.$yesterday));
             if ($hasOrigin == $distantName.'@'.$yesterday) {
                 $srcSnapshot = $yesterday;
             } else {
@@ -138,7 +142,7 @@ try {
                 for ($j = 1; $j<10; $j++) {
                     $testSnap = date('Y-m-d', time()-86400*$j);
                     $hasOrigin = trim($distantSsh->exec(
-                        'zfs list -H -o name '.$distantName.'@'.$testSnap.'.000000Z'
+                        '/sbin/zfs list -H -o name '.$distantName.'@'.$testSnap.'.000000Z'
                     ));
                     if ($hasOrigin == $distantName.'@'.$testSnap.'.000000Z') {
                         $srcSnapshot = date('Y-m-d', time()-86400*$j).'.000000Z';
@@ -149,7 +153,7 @@ try {
 
             if ($srcSnapshot === null) {
                 printf(
-                    "%s [%4.1f%%] ERROR WITH %-40s: cannot find source snapshot suitable.\n",
+                    "%s [%4.1f%%] ERROR WITH %-60s: cannot find source snapshot suitable.\n",
                     date('Y-m-d H:i:s'),
                     $i/count($localVolumes)*100,
                     $vol
@@ -159,11 +163,11 @@ try {
                 printf("%s [%4.1f%%] Syncing %s from snapshot @%s ...", date('Y-m-d H:i:s'), $i/count($localVolumes)*100, $vol, $srcSnapshot);
                 $start = microtime(true);
 
-                echo $distantInteractiveSsh->shell("/usr/bin/mbuffer -q -s 128k -W 600 -m 100M -4 -I 31330|zfs recv -F '".$distantName."' 2>&1 & ".PHP_EOL);
+                echo $distantInteractiveSsh->shell("/usr/bin/mbuffer -q -s 128k -W 600 -m 100M -4 -I 31330|/sbin/zfs recv -F '".$distantName."' 2>&1 & ".PHP_EOL);
                 // need to wait a little for process to spawn
                 sleep(1);
 
-                $str = "zfs send -I '".$vol."@".$srcSnapshot."' '".$vol."@".$today."' | ".
+                $str = "/sbin/zfs send -I '".$vol."@".$srcSnapshot."' '".$vol."@".$today."' | ".
                        "/usr/bin/mbuffer -q -s 128k -W 600 -m 100M -O '".$parameters['ssh_host'].":31330' 2>&1";
 
                 $returnString = shell_exec($str);
@@ -176,25 +180,11 @@ try {
                     die(-1);
                 }
 
-                echo "\n";
-
                 if ($returnString == '') {
-                    printf(
-                        "%s [%4.1f%%] Synced  %-40s OK in %7.2f seconds\n",
-                        date('Y-m-d H:i:s'),
-                        $i/count($localVolumes)*100,
-                        $vol,
-                        microtime(true)-$start
-                    );
+                    printf("OK in %7.2f seconds\n", microtime(true)-$start);
 
                 } else {
-                    printf(
-                        "%s [%4.1f%%] Synced  %-40s FAILED: %s\n",
-                        date('Y-m-d H:i:s'),
-                        $i/count($localVolumes)*100,
-                        $vol,
-                        $returnString
-                    );
+                    printf("FAILED: %s\n", $returnString);
                     kill_local_mbuffer();
                 }
             }
@@ -215,12 +205,16 @@ try {
     $distantSsh->disconnect();
     $distantInteractiveSsh->disconnect();
 
+    printf("%s Finished !\n", date('Y-m-d H:i:s'));
+
 } catch (Exception $e) {
     echo "An error occured\n";
     echo $e->getMessage();
     echo "----------\n";
     var_dump($e);
+    debug_print_backtrace();
 }
+
 
 function kill_local_mbuffer()
 {
@@ -361,3 +355,4 @@ class NiceSSH
         $this->disconnect();
     }
 }
+
