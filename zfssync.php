@@ -160,16 +160,15 @@ try {
                 );
 
             } else {
-                printf("%s [%4.1f%%] Syncing %s from snapshot @%s ...", date('Y-m-d H:i:s'), $i/count($localVolumes)*100, $vol, $srcSnapshot);
+                printf("%s [%4.1f%%] Syncing %s from @%s ...", date('Y-m-d H:i:s'), $i/count($localVolumes)*100, $vol, $srcSnapshot);
                 $start = microtime(true);
 
                 echo $distantInteractiveSsh->shell("/usr/bin/mbuffer -q -s 128k -W 600 -m 100M -4 -I 31330|/sbin/zfs recv -F '".$distantName."' 2>&1 & ".PHP_EOL);
                 // need to wait a little for process to spawn
-                sleep(1);
+                usleep(100000);
 
                 $str = "/sbin/zfs send -I '".$vol."@".$srcSnapshot."' '".$vol."@".$today."' | ".
                        "/usr/bin/mbuffer -q -s 128k -W 600 -m 100M -O '".$parameters['ssh_host'].":31330' 2>&1";
-
                 $returnString = shell_exec($str);
 
                 // ZFS take time to finish and free parent mbuffer process, so we just wait a little.
@@ -194,7 +193,7 @@ try {
     }
 
     // Cleanup
-    $pid = trim($distantInteractiveSsh->exec("ps fauxw |fgrep mbuffer |grep ' 31330'|grep -v grep |awk '{print $2}'"));
+    $pid = trim($distantSsh->exec("ps fauxw |fgrep mbuffer |grep ' 31330'|grep -v grep |awk '{print $2}'"));
     if ($pid != '') {
         echo "Cleaning mbuffer process #".$pid."\n";
         echo $distantInteractiveSsh->exec('kill '.$pid);
@@ -227,16 +226,16 @@ function kill_local_mbuffer()
 
 function wait_for_local_mbuffer()
 {
-    for ($i = 0; $i<=600; $i++) {
+    for ($i = 0; $i<=6000; $i++) {
         $pid = trim(shell_exec("ps fauxw |fgrep mbuffer |grep ' 31330' |grep -v grep |awk '{print $2}'"));
         if ($pid != '') {
-            //echo ".";
-            sleep(1);
+            echo ".";
+            usleep(50000);
         } else {
             break;
         }
     }
-    if ($i == 600) {
+    if ($i == 6000) {
         echo "Wait too much, sorry\n";
         return false;
     }
@@ -246,16 +245,16 @@ function wait_for_local_mbuffer()
 
 function wait_for_distant_mbuffer($connection)
 {
-    for ($i = 0; $i<=600; $i++) {
-        $pid = trim($connection->exec("ps fauxw |fgrep mbuffer |grep ' 31330' |grep -v grep |awk '{print $2}'"));
+    for ($i = 0; $i<=6000; $i++) {
+        $pid = trim($connection->exec("ps fauxw |fgrep mbuffer |grep ' 31330' |grep -v grep |awk '{print $2}'".PHP_EOL));
         if ($pid != '') {
-            //echo "+";
-            sleep(1);
+            echo "+";
+            usleep(50000);
         } else {
             break;
         }
     }
-    if ($i == 600) {
+    if ($i == 6000) {
         echo "Wait too much, sorry\n";
         return false;
     }
