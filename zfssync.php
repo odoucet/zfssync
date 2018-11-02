@@ -167,7 +167,7 @@ try {
                 // need to wait a little for process to spawn
                 usleep(100000);
 
-                $str = "/sbin/zfs send -I '".$vol."@".$srcSnapshot."' '".$vol."@".$today."' | ".
+                $str = "/sbin/zfs send -i '".$vol."@".$srcSnapshot."' '".$vol."@".$today."' | ".
                        "/usr/bin/mbuffer -q -s 128k -W 600 -m 100M -O '".$parameters['ssh_host'].":31330' 2>&1";
                 $returnString = shell_exec($str);
 
@@ -271,12 +271,12 @@ class NiceSSH
     private $parameters;
 
     private $methods = array(
-        'client_to_server' => array(
-            'crypt' => 'arcfour',
+        /*'client_to_server' => array(
+            'crypt' => 'blowfish-cbc',
         ),
         'server_to_client' => array(
-            'crypt' => 'arcfour',
-        )
+            'crypt' => 'blowfish-cbc',
+        )*/
     );
 
     public $shell;
