@@ -1,4 +1,5 @@
 <?php
+
 date_default_timezone_set('UTC');
 
 $errors = "";
@@ -37,9 +38,12 @@ try {
     $localVolumes = explode("\n", trim(shell_exec('/sbin/zfs list -H -o name -rt filesystem,volume '.$parameters['zfs_local_path'])));
     $volumesToCreate = array();
 
-    $yesterday = date('Y-m-d', time()-86400).'.000000Z';
-    $today     = date('Y-m-d').'.000000Z';
-    
+    /// round currentDate with schedulemin
+    $currentDate = floor(time()/($parameters['schedulemin']*60))*$parameters['schedulemin']*60;
+
+    $lastSnapshot = gmdate('Y-m-d.Hi00\Z', $currentDate -$parameters['schedulemin']*60);
+    $now          = gmdate('Y-m-d.Hi00\Z', $currentDate);
+
     // Diff !
     foreach ($localVolumes as $i => $line) {
         if (trim($line) == '') {
@@ -68,6 +72,7 @@ try {
         count($volumesToCreate)
     );
 
+    // -------------- NEW VOLUMES --------------------
     if (count($volumesToCreate) > 0) {
         sort($volumesToCreate);
         $i = 0;
@@ -86,7 +91,7 @@ try {
             // need to wait a little for process to spawn
             sleep(1);
 
-            $str =  "/sbin/zfs send  '".$vol."@".$today."' | ".
+            $str =  "/sbin/zfs send '".$vol."@".$now."' | ".
                     "/usr/bin/mbuffer -q -s 128k -W 600 -m 100M -O '".$parameters['ssh_host'].":31330' 2>&1";
 
             $returnString = shell_exec($str);
@@ -94,7 +99,7 @@ try {
             wait_for_distant_mbuffer($distantSsh);
             if ($returnString == '') {
                     printf(
-                        "%s [%4.1f%%] Synced  %-60s OK in %7.2f seconds\n",
+                        "%s [%4.1f%%] Synced  %-84s OK in %5.1fs\n",
                         date('Y-m-d H:i:s'),
                         $i/count($volumesToCreate)*100,
                         $vol,
@@ -115,11 +120,13 @@ try {
         }
     }
 
-    // Diff
+
+    // -------------- EXISTING VOLUMES --------------
     printf(
-        "%s We have %d volumes to sync with incremental method.\n",
+        "%s We have %d volumes to sync with incremental method to snap @%s.\n",
         date('Y-m-d H:i:s'),
-        count($localVolumes)
+        count($localVolumes),
+        $now
     );
 
     $i = 0;
@@ -127,25 +134,25 @@ try {
         $distantName = str_replace($parameters['zfs_local_path'], $parameters['zfs_distant_path'], $vol);
 
         // find if distant destination already exists
-        $hasSnap = trim($distantSsh->exec('zfs list -H -o name '.$distantName.'@'.$today));
-        if ($hasSnap == $distantName.'@'.$today) {
+        $hasSnap = trim($distantSsh->exec('zfs list -H -o name '.$distantName.'@'.$now));
+        if ($hasSnap == $distantName.'@'.$now) {
             //Yes, already have this one !
             printf("%s [%4.1f%%] %-60s already synced !\n", date('Y-m-d H:i:s'), $i/count($localVolumes)*100, $vol);
 
         } else {
             // find if distant src exists
-            $hasOrigin = trim($distantSsh->exec('/sbin/zfs list -H -o name '.$distantName.'@'.$yesterday));
-            if ($hasOrigin == $distantName.'@'.$yesterday) {
-                $srcSnapshot = $yesterday;
+            $hasOrigin = trim($distantSsh->exec('/sbin/zfs list -H -o name '.$distantName.'@'.$lastSnapshot));
+            if ($hasOrigin == $distantName.'@'.$lastSnapshot) {
+                $srcSnapshot = $lastSnapshot;
             } else {
                 $srcSnapshot = null;
-                for ($j = 1; $j<10; $j++) {
-                    $testSnap = date('Y-m-d', time()-86400*$j);
+                for ($j = 1; $j<=$parameters['scheduleloop']; $j++) {
+                    $testSnap = gmdate('Y-m-d.Hi00\Z', $currentDate-$parameters['schedulemin']*60*$j);
                     $hasOrigin = trim($distantSsh->exec(
-                        '/sbin/zfs list -H -o name '.$distantName.'@'.$testSnap.'.000000Z'
+                        '/sbin/zfs list -H -o name '.$distantName.'@'.$testSnap
                     ));
-                    if ($hasOrigin == $distantName.'@'.$testSnap.'.000000Z') {
-                        $srcSnapshot = date('Y-m-d', time()-86400*$j).'.000000Z';
+                    if ($hasOrigin == $distantName.'@'.$testSnap) {
+                        $srcSnapshot = $testSnap;
                         break;
                     }
                 }
@@ -160,14 +167,14 @@ try {
                 );
 
             } else {
-                printf("%s [%4.1f%%] Syncing %s from @%s ...", date('Y-m-d H:i:s'), $i/count($localVolumes)*100, $vol, $srcSnapshot);
+                printf("%s [%4.1f%%] Syncing %-60s from @%s ...", date('Y-m-d H:i:s'), $i/count($localVolumes)*100, $vol, $srcSnapshot);
                 $start = microtime(true);
 
                 echo $distantInteractiveSsh->shell("/usr/bin/mbuffer -q -s 128k -W 600 -m 100M -4 -I 31330|/sbin/zfs recv -F '".$distantName."' 2>&1 & ".PHP_EOL);
                 // need to wait a little for process to spawn
                 usleep(100000);
 
-                $str = "/sbin/zfs send -i '".$vol."@".$srcSnapshot."' '".$vol."@".$today."' | ".
+                $str = "/sbin/zfs send -i '".$vol."@".$srcSnapshot."' '".$vol."@".$now."' | ".
                        "/usr/bin/mbuffer -q -s 128k -W 600 -m 100M -O '".$parameters['ssh_host'].":31330' 2>&1";
                 $returnString = shell_exec($str);
 
@@ -180,7 +187,7 @@ try {
                 }
 
                 if ($returnString == '') {
-                    printf("OK in %7.2f seconds\n", microtime(true)-$start);
+                    printf("OK in %5.1fs\n", microtime(true)-$start);
 
                 } else {
                     printf("FAILED: %s\n", $returnString);
@@ -232,15 +239,12 @@ function wait_for_local_mbuffer()
             echo ".";
             usleep(50000);
         } else {
-            break;
+            return true;
         }
     }
-    if ($i == 6000) {
-        echo "Wait too much, sorry\n";
-        return false;
-    }
-    //echo "\n";
-    return true;
+
+    echo "Wait too much, sorry\n";
+    return false;
 }
 
 function wait_for_distant_mbuffer($connection)
@@ -248,18 +252,15 @@ function wait_for_distant_mbuffer($connection)
     for ($i = 0; $i<=6000; $i++) {
         $pid = trim($connection->exec("ps fauxw |fgrep mbuffer |grep ' 31330' |grep -v grep |awk '{print $2}'".PHP_EOL));
         if ($pid != '') {
-            echo "+";
+            //echo "+";
             usleep(50000);
         } else {
-            break;
+            return true;
         }
     }
-    if ($i == 6000) {
-        echo "Wait too much, sorry\n";
-        return false;
-    }
-    //echo "\n";
-    return true;
+
+    echo "Wait too much, sorry\n";
+    return false;
 }
 
 
